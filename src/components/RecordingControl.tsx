@@ -4,15 +4,14 @@ import { toneManager } from '@/lib/toneManager';
 import { FaRecordVinyl, FaStopCircle } from 'react-icons/fa';
 
 interface RecordingControlProps {
-    //
+    remoteStreams: MediaStream[];
 }
 
-export default function RecordingControl({}: RecordingControlProps) {
+export default function RecordingControl({ remoteStreams }: RecordingControlProps) {
     const [isRecording, setIsRecording] = useState(false);
 
     const startRecording = () => {
-        // todo: get remote streams
-        toneManager.startRecording([]);
+        toneManager.startRecording(remoteStreams);
         setIsRecording(true);
     };
 

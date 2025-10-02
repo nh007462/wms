@@ -1,153 +1,147 @@
 // src/lib/toneManager.ts
 import * as Tone from 'tone';
 
-// tonejs-instrumentsは型定義がないためanyとして扱う
-// @ts-ignore
-import { SampleLibrary } from 'tonejs-instruments';
+declare global {
+  interface Window {
+    SampleLibrary: any;
+  }
+}
+
+const loadSampleLibraryScript = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (window.SampleLibrary) return resolve();
+    const script = document.createElement('script');
+    script.src = '/Tonejs-Instruments.js';
+    script.onload = () => resolve();
+    script.onerror = (e) => reject(e);
+    document.body.appendChild(script);
+  });
+};
 
 export const availableInstruments: string[] = [
-  "bass-electric", "bassoon", "cello", "clarinet", "contrabass", "flute",
+  "piano", "bass-electric", "bassoon", "cello", "clarinet", "contrabass", "flute",
   "french-horn", "guitar-acoustic", "guitar-electric", "guitar-nylon",
-  "harmonium", "harp", "organ", "piano", "saxophone", "trombone",
+  "harmonium", "harp", "organ", "saxophone", "trombone",
   "trumpet", "tuba", "violin", "xylophone"
 ];
 
 class ToneManager {
   private instruments: Map<string, any> = new Map();
   private audioContextStarted: boolean = false;
-  public micSource: Tone.UserMedia | null = null;
+  private micStream: MediaStream | null = null;
+  private micSourceNode: MediaStreamAudioSourceNode | null = null;
   public localInstrumentStreamDest: MediaStreamAudioDestinationNode | null = null;
   public localInstrumentStream: MediaStream | null = null;
   private isRecording: boolean = false;
   private recorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
 
-  constructor() {
-    if (typeof window !== 'undefined') {
-      this.localInstrumentStreamDest = Tone.getContext().createMediaStreamDestination();
-      this.localInstrumentStream = this.localInstrumentStreamDest.stream;
-    }
-  }
-
-  public async startAudioContext() {
+  public async init() {
     if (this.audioContextStarted) return;
-    if (Tone.context.state !== 'running') {
+    if (typeof window !== 'undefined' && Tone.context.state !== 'running') {
       await Tone.start();
+      this.audioContextStarted = true;
+      if (!this.localInstrumentStreamDest) {
+        this.localInstrumentStreamDest = Tone.getContext().createMediaStreamDestination();
+        this.localInstrumentStream = this.localInstrumentStreamDest.stream;
+      }
+      console.log("AudioContext and ToneManager initialized.");
     }
-    this.audioContextStarted = true;
-    console.log("AudioContext started");
   }
 
   public async loadInstrument(instrumentName: string): Promise<any | null> {
+    if (!this.audioContextStarted) await this.init();
     if (this.instruments.has(instrumentName)) {
       return this.instruments.get(instrumentName)!;
     }
-
     console.log(`Loading instrument: ${instrumentName}...`);
     try {
-      // SampleLibrary.loadはPromiseを返さないため、手動でPromise化する
-      const sampler = await new Promise<any>((resolve) => {
-        const loadedSampler = SampleLibrary.load({
-          instruments: instrumentName,
-          // ★★★ この行を追加 ★★★
-          // public/samples フォルダから音源を読み込むようにパスを指定
-          baseUrl: "/samples/",
-          onload: () => resolve(loadedSampler)
-        });
+      await loadSampleLibraryScript();
+      const sampler = SampleLibrary.load({
+        instruments: instrumentName,
+        baseUrl: "/samples/"
       });
-
-      // 楽器の出力をメインと、録音用のストリームの両方に接続
-      sampler[instrumentName].connect(this.localInstrumentStreamDest);
-      sampler[instrumentName].toDestination();
-
-      this.instruments.set(instrumentName, sampler[instrumentName]);
+      await Tone.loaded();
+      
+      if (this.localInstrumentStreamDest) sampler.connect(this.localInstrumentStreamDest);
+      sampler.toDestination();
+      
+      this.instruments.set(instrumentName, sampler);
       console.log(`Instrument ${instrumentName} loaded.`);
-      return sampler[instrumentName];
+      return sampler;
     } catch (error) {
       console.error(`Failed to load instrument ${instrumentName}:`, error);
       return null;
     }
   }
   
-  public getInstrument(instrumentName: string): any | null {
-    return this.instruments.get(instrumentName) || null;
+  public noteOn(instrumentName: string, note: string | string[]) {
+    const instrument = this.instruments.get(instrumentName);
+    if (instrument) instrument.triggerAttack(note, Tone.now());
   }
-  
-  public playNote(instrumentName: string, note: string | string[], duration: Tone.Unit.Time = '8n') {
-    const instrument = this.getInstrument(instrumentName);
-    if (instrument) {
-        instrument.triggerAttackRelease(note, duration, Tone.now());
-    }
+
+  public noteOff(instrumentName: string, note: string | string[]) {
+    const instrument = this.instruments.get(instrumentName);
+    if (instrument) instrument.triggerRelease(note, Tone.now() + 0.05);
   }
 
   public async toggleMic(enabled: boolean): Promise<MediaStream | null> {
-    await this.startAudioContext();
+    await this.init();
     if (enabled) {
-      if (this.micSource?.state === 'started') return this.micSource.stream;
+      if (this.micStream) return this.micStream;
       try {
-        this.micSource = new Tone.UserMedia();
-        await this.micSource.open();
-        // マイク音声をメイン出力と録音用ストリームの両方へ
-        this.micSource.connect(this.localInstrumentStreamDest!);
-        this.micSource.toDestination();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.micStream = stream;
+        const audioContext = Tone.getContext();
+        this.micSourceNode = audioContext.createMediaStreamSource(stream);
+        if (this.localInstrumentStreamDest) this.micSourceNode.connect(this.localInstrumentStreamDest);
+        this.micSourceNode.connect(audioContext.rawContext.destination);
         console.log("Microphone opened and connected.");
-        return this.micSource.stream;
+        return stream;
       } catch (e) {
         console.error("Failed to get microphone permission:", e);
-        this.micSource = null;
+        this.micStream = null; this.micSourceNode = null;
         return null;
       }
     } else {
-      if (this.micSource) {
-        this.micSource.close();
-        this.micSource.disconnect();
-        this.micSource = null;
-        console.log("Microphone closed.");
-      }
+      if (this.micStream) this.micStream.getTracks().forEach(track => track.stop());
+      if (this.micSourceNode) this.micSourceNode.disconnect();
+      this.micStream = null; this.micSourceNode = null;
+      console.log("Microphone closed.");
       return null;
     }
   }
-
+  
   public startRecording(remoteStreams: MediaStream[]) {
-    if (this.isRecording) return;
+    if (this.isRecording || !this.localInstrumentStream) {
+      console.warn("Recording cannot start.");
+      return;
+    };
     
-    // すべての音声ソースをミックスする
-    const allStreams = [...remoteStreams];
-    if(this.localInstrumentStream) {
-      allStreams.push(this.localInstrumentStream);
-    }
-
-    // MediaStreamをAudioContextに接続
+    const allStreams = [...remoteStreams, this.localInstrumentStream];
     const audioContext = Tone.getContext();
     const mixedDestination = audioContext.createMediaStreamDestination();
     
     allStreams.forEach(stream => {
-      if(stream.getAudioTracks().length > 0) {
-        audioContext.createMediaStreamSource(stream).connect(mixedDestination);
-      }
+        if(stream.getAudioTracks().length > 0) {
+            audioContext.createMediaStreamSource(stream).connect(mixedDestination);
+        }
     });
 
     this.recorder = new MediaRecorder(mixedDestination.stream);
     this.recordedChunks = [];
-
     this.recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        this.recordedChunks.push(event.data);
-      }
+      if (event.data.size > 0) this.recordedChunks.push(event.data);
     };
-    
     this.recorder.onstop = () => {
       const blob = new Blob(this.recordedChunks, { type: 'audio/webm' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.style.display = 'none';
       a.href = url;
       a.download = `session-recording-${new Date().toISOString()}.webm`;
-      document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
     };
-
     this.recorder.start();
     this.isRecording = true;
     console.log("Recording started.");
@@ -161,5 +155,4 @@ class ToneManager {
   }
 }
 
-// シングルトンインスタンス
 export const toneManager = new ToneManager();

@@ -5,11 +5,13 @@ import { usePathname } from 'next/navigation';
 
 export default function Header() {
   const pathname = usePathname();
-  // セッションページ（練習モードを除く）にいるかどうかを判定
-  const isSessionPage = pathname.startsWith('/session/') && !pathname.includes('practice');
+  
+  // ★★★ ここの条件を変更 ★★★
+  // '/session/' で始まるすべてのページ（練習モード含む）でボタンを表示するようにする
+  const isSessionPage = pathname.startsWith('/session/');
 
   const handleLeaveRoom = () => {
-    // ページ遷移することで、セッションページのuseEffectクリーンアップ関数がトリガーされる
+    // どのセッションからでもルーム選択画面に戻る
     window.location.href = '/rooms';
   };
 
