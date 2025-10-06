@@ -1,18 +1,26 @@
 // src/lib/toneManager.ts
 import * as Tone from 'tone';
 
-declare global {
-  interface Window {
-    SampleLibrary: any;
-  }
-}
+// 型定義ファイルは自動で読み込まれるため、ここでのimportは不要です
 
 const loadSampleLibraryScript = (): Promise<void> => {
   return new Promise((resolve, reject) => {
     if (window.SampleLibrary) return resolve();
     const script = document.createElement('script');
     script.src = '/Tonejs-Instruments.js';
-    script.onload = () => resolve();
+    script.onload = () => {
+      // スクリプトロード後、変数が定義されるのを少し待つ
+      let attempts = 0;
+      const interval = setInterval(() => {
+        if (window.SampleLibrary) {
+          clearInterval(interval);
+          resolve();
+        } else if (attempts++ > 20) { // 2秒待っても現れない場合は失敗
+          clearInterval(interval);
+          reject(new Error("SampleLibrary did not load in time."));
+        }
+      }, 100);
+    };
     script.onerror = (e) => reject(e);
     document.body.appendChild(script);
   });
@@ -26,7 +34,8 @@ export const availableInstruments: string[] = [
 ];
 
 class ToneManager {
-  private instruments: Map<string, any> = new Map();
+  // 'any'を'Tone.Sampler'に修正
+  private instruments: Map<string, Tone.Sampler> = new Map();
   private audioContextStarted: boolean = false;
   private micStream: MediaStream | null = null;
   private micSourceNode: MediaStreamAudioSourceNode | null = null;
@@ -49,7 +58,8 @@ class ToneManager {
     }
   }
 
-  public async loadInstrument(instrumentName: string): Promise<any | null> {
+  // 'any'を'Tone.Sampler'に修正
+  public async loadInstrument(instrumentName: string): Promise<Tone.Sampler | null> {
     if (!this.audioContextStarted) await this.init();
     if (this.instruments.has(instrumentName)) {
       return this.instruments.get(instrumentName)!;
@@ -57,10 +67,13 @@ class ToneManager {
     console.log(`Loading instrument: ${instrumentName}...`);
     try {
       await loadSampleLibraryScript();
-      const sampler = SampleLibrary.load({
+      
+      // samplerの型をTone.Samplerとして明示
+      const sampler = window.SampleLibrary.load({
         instruments: instrumentName,
         baseUrl: "/samples/"
-      });
+      }) as Tone.Sampler;
+      
       await Tone.loaded();
       
       if (this.localInstrumentStreamDest) sampler.connect(this.localInstrumentStreamDest);
@@ -116,7 +129,7 @@ class ToneManager {
     if (this.isRecording || !this.localInstrumentStream) {
       console.warn("Recording cannot start.");
       return;
-    };
+    }
     
     const allStreams = [...remoteStreams, this.localInstrumentStream];
     const audioContext = Tone.getContext();
